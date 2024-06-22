@@ -143,6 +143,8 @@ pub fn main() !void {
     var gpa: std.heap.GeneralPurposeAllocator(.{}) = .{};
     const alloc = gpa.allocator();
 
+    const stdin = std.io.getStdIn().reader();
+
     var lines = std.mem.tokenize(u8, @embedFile("google-10000-english-usa.txt"), "\r\n");
 
     std.debug.print("Preparing the dict...\n", .{});
@@ -152,10 +154,16 @@ pub fn main() !void {
 
     std.debug.print("Done!\n", .{});
 
-    const words435 = try dict.findAndCollectWithRanks(alloc, "435");
-    defer alloc.free(words435);
+    var buf: [32]u8 = undefined;
 
-    for (words435) |word| {
+    std.debug.print("2:abc 3:def 4:ghi 5:jkl 6:mno 7:pqrs 8:tuv 9:wxyz\n", .{});
+    std.debug.print("Enter some numbers:\n", .{});
+    const input = (try stdin.readUntilDelimiterOrEof(&buf, '\n')).?;
+
+    const words = try dict.findAndCollectWithRanks(alloc, input[0 .. input.len - 1]);
+    defer alloc.free(words);
+
+    for (words) |word| {
         std.debug.print("{s}\n", .{word.ascii});
     }
 }
