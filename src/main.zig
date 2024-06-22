@@ -85,6 +85,27 @@ const NumTree = struct {
         }
     }
 
+    pub fn findAndCollectWithRanksStrict(self: NumTree, numbers: []const u8) ![]const Word {
+        if (numbers.len == 0) {
+            // We give all the available results
+            if (self.words) |words| {
+                return words.items;
+            } else return &.{};
+        } else {
+            const n = numbers[0];
+            if (n < '2' or n > '9')
+                return error.InvalidNumber;
+
+            if (self.sub_tree) |tree| {
+                // Do the find and collect on the right sub tree
+                return tree[n - '2'].findAndCollectWithRanksStrict(numbers[1..]);
+            } else {
+                // No results
+                return &.{};
+            }
+        }
+    }
+
     fn collectRecursive(self: NumTree, list: *std.ArrayList(Word)) !void {
         // TODO: add a way to limit the list size (but still keep the best scores)
         if (self.sub_tree) |tree| {
@@ -163,7 +184,15 @@ pub fn main() !void {
     const words = try dict.findAndCollectWithRanks(alloc, input[0 .. input.len - 1]);
     defer alloc.free(words);
 
+    std.debug.print("Results:\n", .{});
     for (words) |word| {
+        std.debug.print("{s}\n", .{word.ascii});
+    }
+
+    const words_strict = try dict.findAndCollectWithRanksStrict(input[0 .. input.len - 1]);
+
+    std.debug.print("Results (strict):\n", .{});
+    for (words_strict) |word| {
         std.debug.print("{s}\n", .{word.ascii});
     }
 }
