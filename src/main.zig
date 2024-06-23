@@ -65,20 +65,19 @@ const NumTree = struct {
             words.deinit();
     }
 
-    pub fn findAndCollect(self: NumTree, comptime n: comptime_int, numbers: []const u8) ![n]?[]const u8 {
+    pub fn findAndCollect(self: NumTree, buf: []Word, numbers: []const u8) ![]Word {
+        var list = std.ArrayListUnmanaged(Word).initBuffer(buf);
+
+        try self.findAndCollectInternal(&list, numbers);
+        sortByRank(list.items);
+
+        return list.items;
+    }
+
+    fn findAndCollectInternal(self: NumTree, list: *std.ArrayListUnmanaged(Word), numbers: []const u8) !void {
         if (numbers.len == 0) {
             // We give all the available results
-            var arr = std.BoundedArray(Word, n).init(0) catch unreachable;
-
-            self.collectRecursive(n, &arr);
-
-            // Make an array with only the asciis
-            var ret: [n]?[]const u8 = .{null} ** n;
-            for (arr.slice(), 0..) |word, i| {
-                ret[i] = word.ascii;
-            }
-
-            return ret;
+            self.collectRecursive(list);
         } else {
             const num = numbers[0];
             if (num < '2' or num > '9')
@@ -86,10 +85,7 @@ const NumTree = struct {
 
             if (self.sub_tree) |tree| {
                 // Do the find and collect on the right sub tree
-                return tree[num - '2'].findAndCollect(n, numbers[1..]);
-            } else {
-                // No results
-                return .{null} ** n;
+                return tree[num - '2'].findAndCollectInternal(list, numbers[1..]);
             }
         }
     }
@@ -116,19 +112,21 @@ const NumTree = struct {
     //     }
     // }
 
-    fn collectRecursive(self: NumTree, comptime n: comptime_int, list: *std.BoundedArray(Word, n)) void {
+    fn collectRecursive(self: NumTree, list: *std.ArrayListUnmanaged(Word)) void {
         // Call recursively on sub trees
         if (self.sub_tree) |tree| {
             for (tree) |sub_t| {
-                sub_t.collectRecursive(n, list);
+                sub_t.collectRecursive(list);
             }
         }
         // Add all words of this branch
         if (self.words) |words| {
             for (words.items) |word| {
-                list.append(word) catch {
-                    _ = insertBasedOnRank(word, &list.buffer);
-                };
+                if (list.unusedCapacitySlice().len > 0) {
+                    list.appendAssumeCapacity(word);
+                } else {
+                    _ = insertBasedOnRank(word, list.items);
+                }
             }
         }
     }
@@ -224,12 +222,12 @@ pub fn main() !void {
     var input = (try stdin.readUntilDelimiterOrEof(&buf, '\n')).?;
     input = input[0 .. input.len - 1];
 
-    const words = try dict.findAndCollect(3, input);
+    var buf2 = [_]Word{undefined} ** 4;
+    const words = try dict.findAndCollect(&buf2, input);
 
     std.debug.print("Results:\n", .{});
-    for (&words) |word| {
-        if (word) |w|
-            std.debug.print("{s}\n", .{w});
+    for (words) |word| {
+        std.debug.print("{s}\n", .{word.ascii});
     }
 }
 
