@@ -65,7 +65,30 @@ const NumTree = struct {
             words.deinit();
     }
 
-    pub fn findAndCollect(self: NumTree, buf: []Word, numbers: []const u8) ![]Word {
+    pub fn findAndCollect(self: NumTree, alloc: std.mem.Allocator, n: usize, numbers: []const u8) ![]const []const u8 {
+        const words = try alloc.alloc(Word, n);
+        defer alloc.free(words);
+        const asciis = try alloc.alloc([]const u8, n);
+        errdefer alloc.free(asciis);
+
+        const results = try self.findAndCollectWithRanks(words, numbers);
+        for (results, asciis[0..results.len]) |word, *ascii| {
+            ascii.* = word.ascii;
+        }
+
+        // Shrink the allocated asciis to only the size of the results
+        // TODO: surely there has to be a better way to do this?
+        if (alloc.resize(asciis, results.len)) {
+            return asciis[0..results.len];
+        } else {
+            const ret = try alloc.dupe([]const u8, asciis);
+            errdefer alloc.free(ret);
+            alloc.free(asciis);
+            return ret;
+        }
+    }
+
+    pub fn findAndCollectWithRanks(self: NumTree, buf: []Word, numbers: []const u8) ![]const Word {
         var list = std.ArrayListUnmanaged(Word).initBuffer(buf);
 
         try self.findAndCollectInternal(&list, numbers);
@@ -222,12 +245,11 @@ pub fn main() !void {
     var input = (try stdin.readUntilDelimiterOrEof(&buf, '\n')).?;
     input = input[0 .. input.len - 1];
 
-    var buf2 = [_]Word{undefined} ** 4;
-    const words = try dict.findAndCollect(&buf2, input);
-
+    const words = try dict.findAndCollect(alloc, 4, input);
+    defer alloc.free(words);
     std.debug.print("Results:\n", .{});
     for (words) |word| {
-        std.debug.print("{s}\n", .{word.ascii});
+        std.debug.print("{s}\n", .{word});
     }
 }
 
