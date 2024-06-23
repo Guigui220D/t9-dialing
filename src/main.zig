@@ -3,6 +3,10 @@ const std = @import("std");
 const Word = struct {
     ascii: []const u8,
     rank: usize,
+
+    pub fn compRanks(_: void, lhs: Word, rhs: Word) bool {
+        return lhs.rank < rhs.rank;
+    }
 };
 
 const NumTree = struct {
@@ -61,60 +65,98 @@ const NumTree = struct {
             words.deinit();
     }
 
-    pub fn findAndCollectWithRanks(self: NumTree, alloc: std.mem.Allocator, numbers: []const u8) ![]const Word {
+    pub fn findAndCollect(self: NumTree, comptime n: comptime_int, numbers: []const u8) ![n]?[]const u8 {
         if (numbers.len == 0) {
             // We give all the available results
-            var arr = std.ArrayList(Word).init(alloc);
-            errdefer arr.deinit();
+            var arr = std.BoundedArray(Word, n).init(0) catch unreachable;
 
-            try self.collectRecursive(&arr);
+            self.collectRecursive(n, &arr);
 
-            return try arr.toOwnedSlice();
+            // Make an array with only the asciis
+            var ret: [n]?[]const u8 = .{null} ** n;
+            for (arr.slice(), 0..) |word, i| {
+                ret[i] = word.ascii;
+            }
+
+            return ret;
         } else {
-            const n = numbers[0];
-            if (n < '2' or n > '9')
+            const num = numbers[0];
+            if (num < '2' or num > '9')
                 return error.InvalidNumber;
 
             if (self.sub_tree) |tree| {
                 // Do the find and collect on the right sub tree
-                return tree[n - '2'].findAndCollectWithRanks(alloc, numbers[1..]);
+                return tree[num - '2'].findAndCollect(n, numbers[1..]);
             } else {
                 // No results
-                return &.{};
+                return .{null} ** n;
             }
         }
     }
 
-    pub fn findAndCollectWithRanksStrict(self: NumTree, numbers: []const u8) ![]const Word {
-        if (numbers.len == 0) {
-            // We give all the available results
-            if (self.words) |words| {
-                return words.items;
-            } else return &.{};
-        } else {
-            const n = numbers[0];
-            if (n < '2' or n > '9')
-                return error.InvalidNumber;
+    // TODO: fix to use the limit and the rank sorting
+    // pub fn findAndCollectWithRanksStrict(self: NumTree, numbers: []const u8) ![]const Word {
+    //     if (numbers.len == 0) {
+    //         // We give all the available results
+    //         if (self.words) |words| {
+    //             return words.items;
+    //         } else return &.{};
+    //     } else {
+    //         const n = numbers[0];
+    //         if (n < '2' or n > '9')
+    //             return error.InvalidNumber;
 
-            if (self.sub_tree) |tree| {
-                // Do the find and collect on the right sub tree
-                return tree[n - '2'].findAndCollectWithRanksStrict(numbers[1..]);
-            } else {
-                // No results
-                return &.{};
-            }
-        }
-    }
+    //         if (self.sub_tree) |tree| {
+    //             // Do the find and collect on the right sub tree
+    //             return tree[n - '2'].findAndCollectWithRanksStrict(numbers[1..]);
+    //         } else {
+    //             // No results
+    //             return &.{};
+    //         }
+    //     }
+    // }
 
-    fn collectRecursive(self: NumTree, list: *std.ArrayList(Word)) !void {
-        // TODO: add a way to limit the list size (but still keep the best scores)
+    fn collectRecursive(self: NumTree, comptime n: comptime_int, list: *std.BoundedArray(Word, n)) void {
+        // Call recursively on sub trees
         if (self.sub_tree) |tree| {
             for (tree) |sub_t| {
-                try sub_t.collectRecursive(list);
+                sub_t.collectRecursive(n, list);
             }
         }
-        if (self.words) |words|
-            try list.appendSlice(words.items);
+        // Add all words of this branch
+        if (self.words) |words| {
+            for (words.items) |word| {
+                list.append(word) catch {
+                    _ = insertBasedOnRank(word, &list.buffer);
+                };
+            }
+        }
+    }
+
+    fn sortByRank(words: []Word) void {
+        std.sort.insertion(Word, words, {}, Word.compRanks);
+    }
+
+    fn insertBasedOnRank(word: Word, words: []Word) bool {
+        if (words.len == 0)
+            return false;
+
+        // Find the element in words with the worst rank
+        var max_rank: usize = 0;
+        var max_i: usize = undefined;
+        for (words, 0..) |w, i| {
+            if (w.rank >= max_rank) {
+                max_rank = w.rank;
+                max_i = i;
+            }
+        }
+
+        // Replace it or not
+        if (word.rank < max_rank) {
+            words[max_i] = word;
+            return true;
+        }
+        return false;
     }
 };
 
@@ -179,21 +221,15 @@ pub fn main() !void {
 
     std.debug.print("2:abc 3:def 4:ghi 5:jkl 6:mno 7:pqrs 8:tuv 9:wxyz\n", .{});
     std.debug.print("Enter some numbers:\n", .{});
-    const input = (try stdin.readUntilDelimiterOrEof(&buf, '\n')).?;
+    var input = (try stdin.readUntilDelimiterOrEof(&buf, '\n')).?;
+    input = input[0 .. input.len - 1];
 
-    const words = try dict.findAndCollectWithRanks(alloc, input[0 .. input.len - 1]);
-    defer alloc.free(words);
+    const words = try dict.findAndCollect(3, input);
 
     std.debug.print("Results:\n", .{});
-    for (words) |word| {
-        std.debug.print("{s}\n", .{word.ascii});
-    }
-
-    const words_strict = try dict.findAndCollectWithRanksStrict(input[0 .. input.len - 1]);
-
-    std.debug.print("Results (strict):\n", .{});
-    for (words_strict) |word| {
-        std.debug.print("{s}\n", .{word.ascii});
+    for (&words) |word| {
+        if (word) |w|
+            std.debug.print("{s}\n", .{w});
     }
 }
 
@@ -206,4 +242,9 @@ test "ascii to numbers" {
     try std.testing.expectEqualStrings("484552863", try asciiToNumbers(alloc, "Guillaume"));
     try std.testing.expectEqualStrings("43556096753", try asciiToNumbers(alloc, "Hello World"));
     try std.testing.expectError(error.notAlphabetic, asciiToNumbers(alloc, "Hi!"));
+}
+
+test "ascii to numbers comptime" {
+    try std.testing.expectEqualStrings("484552863", comptime asciiToNumbersComptime("Guillaume"));
+    try std.testing.expectEqualStrings("43556096753", comptime asciiToNumbersComptime("Hello World"));
 }
