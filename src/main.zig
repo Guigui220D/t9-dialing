@@ -9,14 +9,14 @@ const Word = struct {
     }
 };
 
-const NumTree = struct {
-    sub_tree: ?*[8]NumTree = null,
-    words: ?std.ArrayList(Word) = null,
+const NumDict = struct {
+    sub_tree: ?*[8]NumDict = null,
+    words: std.ArrayListUnmanaged(Word) = std.ArrayListUnmanaged(Word).initBuffer(&.{}),
 
-    pub fn create(alloc: std.mem.Allocator, line_iterator: anytype) !NumTree {
+    pub fn create(alloc: std.mem.Allocator, line_iterator: anytype) !NumDict {
         // Return value
-        var root: NumTree = .{};
-        errdefer root.destroy(alloc);
+        var ret: NumDict = .{};
+        errdefer ret.destroy(alloc);
 
         // TODO: make sure all of the defer paths in there are valid in case of allocator error
 
@@ -30,42 +30,43 @@ const NumTree = struct {
             errdefer alloc.free(word.ascii);
             next_rank += 1;
 
-            // Get the numbers string to find the tree position
-            const numbers = try asciiToNumbers(alloc, word.ascii);
-            defer alloc.free(numbers);
-
-            // Find the correct branch to put the word on by iteration
-            var current: *NumTree = &root;
-            for (numbers) |n| {
-                if (current.sub_tree == null) {
-                    current.sub_tree = try alloc.create([8]NumTree);
-                    for (current.sub_tree.?) |*tree|
-                        tree.* = .{};
-                }
-                current = &current.sub_tree.?[n - '2'];
-            }
-
-            // Add the word to the words of the branch
-            if (current.words == null)
-                current.words = std.ArrayList(Word).init(alloc);
-            try current.words.?.append(word);
+            try ret.addWord(alloc, word);
         }
 
-        return root;
+        return ret;
     }
 
-    pub fn destroy(self: *NumTree, alloc: std.mem.Allocator) void {
+    fn addWord(self: *NumDict, alloc: std.mem.Allocator, word: Word) !void {
+        // Get the numbers string to find the tree position
+        const numbers = try asciiToNumbers(alloc, word.ascii);
+        defer alloc.free(numbers);
+
+        // Find the correct branch to put the word on by iteration
+        var current: *NumDict = self;
+        for (numbers) |n| {
+            if (current.sub_tree == null) {
+                current.sub_tree = try alloc.create([8]NumDict);
+                for (current.sub_tree.?) |*tree|
+                    tree.* = .{};
+            }
+            current = &current.sub_tree.?[n - '2'];
+        }
+
+        // Add the word to the words of the branch
+        try current.words.append(alloc, word);
+    }
+
+    pub fn destroy(self: *NumDict, alloc: std.mem.Allocator) void {
         if (self.sub_tree) |tree| {
             for (tree) |*sub_t| {
                 sub_t.destroy(alloc);
             }
             alloc.destroy(self.sub_tree.?);
         }
-        if (self.words) |words|
-            words.deinit();
+        self.words.deinit(alloc);
     }
 
-    pub fn findAndCollect(self: NumTree, alloc: std.mem.Allocator, n: usize, numbers: []const u8) ![]const []const u8 {
+    pub fn findAndCollect(self: NumDict, alloc: std.mem.Allocator, n: usize, numbers: []const u8) ![]const []const u8 {
         const words = try alloc.alloc(Word, n);
         defer alloc.free(words);
         const asciis = try alloc.alloc([]const u8, n);
@@ -88,7 +89,7 @@ const NumTree = struct {
         }
     }
 
-    pub fn findAndCollectWithRanks(self: NumTree, buf: []Word, numbers: []const u8) ![]const Word {
+    pub fn findAndCollectWithRanks(self: NumDict, buf: []Word, numbers: []const u8) ![]const Word {
         var list = std.ArrayListUnmanaged(Word).initBuffer(buf);
 
         try self.findAndCollectInternal(&list, numbers);
@@ -97,7 +98,7 @@ const NumTree = struct {
         return list.items;
     }
 
-    fn findAndCollectInternal(self: NumTree, list: *std.ArrayListUnmanaged(Word), numbers: []const u8) !void {
+    fn findAndCollectInternal(self: NumDict, list: *std.ArrayListUnmanaged(Word), numbers: []const u8) !void {
         if (numbers.len == 0) {
             // We give all the available results
             self.collectRecursive(list);
@@ -114,7 +115,7 @@ const NumTree = struct {
     }
 
     // TODO: fix to use the limit and the rank sorting
-    // pub fn findAndCollectWithRanksStrict(self: NumTree, numbers: []const u8) ![]const Word {
+    // pub fn findAndCollectWithRanksStrict(self: NumDict, numbers: []const u8) ![]const Word {
     //     if (numbers.len == 0) {
     //         // We give all the available results
     //         if (self.words) |words| {
@@ -135,7 +136,7 @@ const NumTree = struct {
     //     }
     // }
 
-    fn collectRecursive(self: NumTree, list: *std.ArrayListUnmanaged(Word)) void {
+    fn collectRecursive(self: NumDict, list: *std.ArrayListUnmanaged(Word)) void {
         // Call recursively on sub trees
         if (self.sub_tree) |tree| {
             for (tree) |sub_t| {
@@ -143,13 +144,11 @@ const NumTree = struct {
             }
         }
         // Add all words of this branch
-        if (self.words) |words| {
-            for (words.items) |word| {
-                if (list.unusedCapacitySlice().len > 0) {
-                    list.appendAssumeCapacity(word);
-                } else {
-                    _ = insertBasedOnRank(word, list.items);
-                }
+        for (self.words.items) |word| {
+            if (list.unusedCapacitySlice().len > 0) {
+                list.appendAssumeCapacity(word);
+            } else {
+                _ = insertBasedOnRank(word, list.items);
             }
         }
     }
@@ -196,11 +195,6 @@ pub fn charToNumber(ascii: u8) !u8 {
     };
 }
 
-pub const NumberDict = struct {
-    ascii: []const []const u8,
-    numbers: []const []const u8,
-};
-
 pub fn asciiToNumbers(alloc: std.mem.Allocator, ascii: []const u8) ![]const u8 {
     const ret = try alloc.alloc(u8, ascii.len);
     errdefer alloc.free(ret);
@@ -233,10 +227,12 @@ pub fn main() !void {
 
     std.debug.print("Preparing the dict...\n", .{});
 
-    var dict = try NumTree.create(alloc, &lines);
+    var begin = std.time.nanoTimestamp();
+    var dict = try NumDict.create(alloc, &lines);
     defer dict.destroy(alloc);
+    var delta = std.time.nanoTimestamp() - begin;
 
-    std.debug.print("Done!\n", .{});
+    std.debug.print("Done! ({} ms)\n", .{@divFloor(delta, 1000000)});
 
     var buf: [32]u8 = undefined;
 
@@ -245,9 +241,16 @@ pub fn main() !void {
     var input = (try stdin.readUntilDelimiterOrEof(&buf, '\n')).?;
     input = input[0 .. input.len - 1];
 
+    begin = std.time.nanoTimestamp();
+    for (0..999) |_| {
+        const w = try dict.findAndCollect(alloc, 4, input);
+        alloc.free(w);
+    }
     const words = try dict.findAndCollect(alloc, 4, input);
+    delta = std.time.nanoTimestamp() - begin;
+
     defer alloc.free(words);
-    std.debug.print("Results:\n", .{});
+    std.debug.print("Results ({} us per call):\n", .{@divFloor(delta, 1000000)});
     for (words) |word| {
         std.debug.print("{s}\n", .{word});
     }
