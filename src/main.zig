@@ -12,6 +12,8 @@ const Word = struct {
 const NumDict = struct {
     sub_tree: ?*[8]NumDict = null,
     words: std.ArrayListUnmanaged(Word) = std.ArrayListUnmanaged(Word).initBuffer(&.{}),
+    best_rank: usize = std.math.maxInt(usize),
+    search_order: [8]u8 = [8]u8{ 0, 1, 2, 3, 4, 5, 6, 7 },
 
     pub fn create(alloc: std.mem.Allocator, line_iterator: anytype) !NumDict {
         // Return value
@@ -43,13 +45,22 @@ const NumDict = struct {
 
         // Find the correct branch to put the word on by iteration
         var current: *NumDict = self;
+        // Update the best rank field for the optimization
+        if (word.rank < current.best_rank)
+            current.best_rank = word.rank;
+
         for (numbers) |n| {
             if (current.sub_tree == null) {
+                // Create the sub_tree if it doesn't exist yet
                 current.sub_tree = try alloc.create([8]NumDict);
                 for (current.sub_tree.?) |*tree|
                     tree.* = .{};
             }
+            // Move the pointer for iterative descent
             current = &current.sub_tree.?[n - '2'];
+            // Update the best rank field for the optimization
+            if (word.rank < current.best_rank)
+                current.best_rank = word.rank;
         }
 
         // Add the word to the words of the branch
@@ -100,8 +111,12 @@ const NumDict = struct {
 
     fn findAndCollectInternal(self: NumDict, list: *std.ArrayListUnmanaged(Word), numbers: []const u8) !void {
         if (numbers.len == 0) {
+            // This variable is for keeping track of the worst item in list
+            // Allowing skipping entire branches when they don't have better than the worst
+            var worst_rank: usize = std.math.maxInt(usize);
+            var full: bool = false;
             // We give all the available results
-            self.collectRecursive(list);
+            self.collectRecursive(list, &worst_rank, &full);
         } else {
             const num = numbers[0];
             if (num < '2' or num > '9')
@@ -136,30 +151,50 @@ const NumDict = struct {
     //     }
     // }
 
-    fn collectRecursive(self: NumDict, list: *std.ArrayListUnmanaged(Word)) void {
+    fn collectRecursive(self: NumDict, list: *std.ArrayListUnmanaged(Word), worst_rank: *usize, full: *bool) void {
         // Call recursively on sub trees
         if (self.sub_tree) |tree| {
-            for (tree) |sub_t| {
-                sub_t.collectRecursive(list);
+            // Follow the optimal seach order for it
+            for (self.search_order) |i| {
+                const sub_t = &tree[i];
+                // Collect only if the branch has a better thing to offer
+                if (sub_t.best_rank < worst_rank.* or !full.*)
+                    sub_t.collectRecursive(list, worst_rank, full);
             }
         }
+
+        var capa = list.unusedCapacitySlice().len;
+
         // Add all words of this branch
         for (self.words.items) |word| {
-            if (list.unusedCapacitySlice().len > 0) {
+            if (capa > 0) {
+                capa -= 1;
+                // In the initial phase where we fill the buffer of words, we can't exclude anything
+                // Since any option is welcome. Therefore we build up the worst_rank value
+                // Which will then be reduced when replacing elements
                 list.appendAssumeCapacity(word);
+                if (word.rank > worst_rank.*)
+                    worst_rank.* = word.rank;
             } else {
-                _ = insertBasedOnRank(word, list.items);
+                if (insertBasedOnRank(word, list.items)) |new_worst|
+                    worst_rank.* = new_worst;
             }
         }
+
+        // When there is no more space in the list, we can start excluding branches
+        if (capa == 0)
+            full.* = true;
     }
 
     fn sortByRank(words: []Word) void {
         std.sort.insertion(Word, words, {}, Word.compRanks);
     }
 
-    fn insertBasedOnRank(word: Word, words: []Word) bool {
+    /// word will be placed in words if theres an element with a worst rank
+    /// If thats the case, the rank of the next worst element will be returned
+    fn insertBasedOnRank(word: Word, words: []Word) ?usize {
         if (words.len == 0)
-            return false;
+            return null;
 
         // Find the element in words with the worst rank
         var max_rank: usize = 0;
@@ -174,9 +209,9 @@ const NumDict = struct {
         // Replace it or not
         if (word.rank < max_rank) {
             words[max_i] = word;
-            return true;
+            return max_rank;
         }
-        return false;
+        return null;
     }
 };
 
@@ -241,12 +276,14 @@ pub fn main() !void {
     var input = (try stdin.readUntilDelimiterOrEof(&buf, '\n')).?;
     input = input[0 .. input.len - 1];
 
+    const result_count = 1;
+
     begin = std.time.nanoTimestamp();
     for (0..999) |_| {
-        const w = try dict.findAndCollect(alloc, 4, input);
+        const w = try dict.findAndCollect(alloc, result_count, input);
         alloc.free(w);
     }
-    const words = try dict.findAndCollect(alloc, 4, input);
+    const words = try dict.findAndCollect(alloc, result_count, input);
     delta = std.time.nanoTimestamp() - begin;
 
     defer alloc.free(words);
