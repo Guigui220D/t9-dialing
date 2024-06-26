@@ -1,20 +1,30 @@
 const std = @import("std");
 
-const Word = struct {
-    ascii: []const u8,
-    rank: usize,
-
-    pub fn compRanks(_: void, lhs: Word, rhs: Word) bool {
-        return lhs.rank < rhs.rank;
-    }
-};
-
+/// Tree structure for a word dictionary based on numbers
+/// Contains pointers to it recursively
 const NumDict = struct {
+    /// The 8 sub trees if there are any (for the numbers 2 through 9)
     sub_tree: ?*[8]NumDict = null,
+    /// The slice of words that match the coordinates of this branch exactly
     words: std.ArrayListUnmanaged(Word) = std.ArrayListUnmanaged(Word).initBuffer(&.{}),
+    /// The best rank of all the words in this words
     best_rank: usize = std.math.maxInt(usize),
+    /// Indices of the branches in the order they should be searched for rank optimizations
     search_order: [8]u8 = [8]u8{ 0, 1, 2, 3, 4, 5, 6, 7 },
 
+    /// Word entry of the dictionary
+    const Word = struct {
+        ascii: []const u8,
+        rank: usize,
+
+        pub fn compRanks(_: void, lhs: Word, rhs: Word) bool {
+            return lhs.rank < rhs.rank;
+        }
+    };
+
+    /// Creates a new dictionary based on an interator of lines
+    /// line_iterator must have the next() function and provide []const u8 (ascii lines)
+    /// This must be deallocated with destroy()
     pub fn create(alloc: std.mem.Allocator, line_iterator: anytype) !NumDict {
         // Return value
         var ret: NumDict = .{};
@@ -41,6 +51,8 @@ const NumDict = struct {
         return ret;
     }
 
+    /// Adds a word to the tree in the right place
+    /// The word's ascii is not duped here so caller owns is
     fn addWord(self: *NumDict, alloc: std.mem.Allocator, word: Word) !void {
         // Get the numbers string to find the tree position
         const numbers = try asciiToNumbers(alloc, word.ascii);
@@ -70,6 +82,8 @@ const NumDict = struct {
         try current.words.append(alloc, word);
     }
 
+    /// Sets the search order based on the content of the branches
+    /// Is called by create after adding all the words
     fn updateOptimalSearches(self: *NumDict) void {
         // Call recursively
         if (self.sub_tree) |tree| {
@@ -80,6 +94,7 @@ const NumDict = struct {
         }
     }
 
+    /// Deallocs this buffer and its contents
     pub fn destroy(self: *NumDict, alloc: std.mem.Allocator) void {
         if (self.sub_tree) |tree| {
             for (tree) |*sub_t| {
@@ -90,6 +105,8 @@ const NumDict = struct {
         self.words.deinit(alloc);
     }
 
+    /// Collects n words from the tree that match (start with) numbers
+    /// The result buffer is allocated and the caller owns it (must free it)
     pub fn findAndCollect(self: NumDict, alloc: std.mem.Allocator, n: usize, numbers: []const u8) ![]const []const u8 {
         const words = try alloc.alloc(Word, n);
         defer alloc.free(words);
@@ -113,27 +130,35 @@ const NumDict = struct {
         }
     }
 
+    /// Collects words from the tree that match (start with) numbers into a user provided buffer
+    /// The slice returned is from the passed buffer, to know how many results there are
     pub fn findAndCollectWithRanks(self: NumDict, buf: []Word, numbers: []const u8) ![]const Word {
         var list = std.ArrayListUnmanaged(Word).initBuffer(buf);
 
-        try self.findAndCollectInternal(&list, numbers);
-        sortByRank(list.items);
+        // TODO: check the numbers
+
+        self.findAndCollectInternal(&list, numbers);
+        std.sort.insertion(Word, list.items, {}, Word.compRanks);
 
         return list.items;
     }
 
-    fn findAndCollectInternal(self: NumDict, list: *std.ArrayListUnmanaged(Word), numbers: []const u8) !void {
+    /// Find words that match (start with) numbers
+    /// The amount of results is determined by the length of list
+    /// The results are sorted by rank
+    /// Numbers must be valid
+    fn findAndCollectInternal(self: NumDict, list: *std.ArrayListUnmanaged(Word), numbers: []const u8) void {
+        // In here the ArrayListUnmanaged is used to wait for https://github.com/ziglang/zig/pull/18361 to be accepted
+        // As a hybrid between ArrayList and BoundedArray that doesn't try to alloc but doesn't own the buffer
         if (numbers.len == 0) {
             // This variable is for keeping track of the worst item in list
             // Allowing skipping entire branches when they don't have better than the worst
-            var worst_rank: usize = std.math.maxInt(usize);
-            var full: bool = false;
+            var context = CollectContext{};
             // We give all the available results
-            self.collectRecursive(list, &worst_rank, &full);
+            self.collectRecursive(list, &context);
         } else {
             const num = numbers[0];
-            if (num < '2' or num > '9')
-                return error.InvalidNumber;
+            std.debug.assert(num >= '2' and num <= '9');
 
             if (self.sub_tree) |tree| {
                 // Do the find and collect on the right sub tree
@@ -142,15 +167,28 @@ const NumDict = struct {
         }
     }
 
-    fn collectRecursive(self: NumDict, list: *std.ArrayListUnmanaged(Word), worst_rank: *usize, full: *bool) void {
+    /// Context for collectRecursive(), allows the rank based optimizations
+    const CollectContext = struct {
+        /// the worst word accepted in the result list as of now
+        worst_rank: usize = std.math.maxInt(usize),
+        /// whether or not the accepted list has been filled
+        full: bool = false,
+    };
+
+    /// Collect words in this tree and its sub-trees
+    /// Pass an unmanaged array to fill, defining the amount of words found
+    /// The n best results are kept (based on rank)
+    /// This function call itself recursively
+    /// The caller can pass a default context, it is meant to be passed recursively
+    fn collectRecursive(self: NumDict, list: *std.ArrayListUnmanaged(Word), context: *CollectContext) void {
         // Call recursively on sub trees
         if (self.sub_tree) |tree| {
             // Follow the optimal seach order for it
             for (self.search_order) |i| {
                 const sub_t = &tree[i];
                 // Collect only if the branch has a better thing to offer
-                if (sub_t.best_rank < worst_rank.* or !full.*)
-                    sub_t.collectRecursive(list, worst_rank, full);
+                if (sub_t.best_rank < context.worst_rank or !context.full)
+                    sub_t.collectRecursive(list, context);
             }
         }
 
@@ -164,25 +202,22 @@ const NumDict = struct {
                 // Since any option is welcome. Therefore we build up the worst_rank value
                 // Which will then be reduced when replacing elements
                 list.appendAssumeCapacity(word);
-                if (word.rank > worst_rank.*)
-                    worst_rank.* = word.rank;
+                if (word.rank > context.worst_rank)
+                    context.worst_rank = word.rank;
             } else {
                 if (insertBasedOnRank(word, list.items)) |new_worst|
-                    worst_rank.* = new_worst;
+                    context.worst_rank = new_worst;
             }
         }
 
         // When there is no more space in the list, we can start excluding branches
         if (capa == 0)
-            full.* = true;
-    }
-
-    fn sortByRank(words: []Word) void {
-        std.sort.insertion(Word, words, {}, Word.compRanks);
+            context.full = true;
     }
 
     /// word will be placed in words if theres an element with a worst rank
-    /// If thats the case, the rank of the next worst element will be returned
+    /// If thats the case, the rank of the new worst element will be returned
+    /// If the word isn't inserted, null is returned
     fn insertBasedOnRank(word: Word, words: []Word) ?usize {
         if (words.len == 0)
             return null;
@@ -207,10 +242,13 @@ const NumDict = struct {
         return null;
     }
 
+    /// Functin for sorting the search_order based on the best rank of each branch
+    /// Must be called only if there is a sub tree (because of .?)
     pub fn compRanks(context: *NumDict, lhs: u8, rhs: u8) bool {
         return context.sub_tree.?[lhs].best_rank < context.sub_tree.?[rhs].best_rank;
     }
 
+    /// Format function for printing a branch and getting some info on it
     pub fn format(
         self: @This(),
         comptime fmt: []const u8,
@@ -226,6 +264,7 @@ const NumDict = struct {
     }
 };
 
+/// Convert a single ascii letter to its matching t9 number
 pub fn charToNumber(ascii: u8) !u8 {
     return switch (std.ascii.toLower(ascii)) {
         'a', 'b', 'c' => '2',
@@ -241,6 +280,7 @@ pub fn charToNumber(ascii: u8) !u8 {
     };
 }
 
+/// Convert an ascii string to its matching t9 numbers
 pub fn asciiToNumbers(alloc: std.mem.Allocator, ascii: []const u8) ![]const u8 {
     const ret = try alloc.alloc(u8, ascii.len);
     errdefer alloc.free(ret);
@@ -252,6 +292,7 @@ pub fn asciiToNumbers(alloc: std.mem.Allocator, ascii: []const u8) ![]const u8 {
     return ret;
 }
 
+/// Convert an ascii string to its matching t9 numbers (at comptime, without an allocator)
 fn asciiToNumbersComptime(ascii: []const u8) []const u8 {
     var ret: []const u8 = "";
 
