@@ -1,5 +1,5 @@
 # TODO:
 
 - unit tests
-- searching the best branch first
 - preparing the data comptime?
+- make sure the ranks work if some ranks are equal

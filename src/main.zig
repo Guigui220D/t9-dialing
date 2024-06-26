@@ -35,6 +35,9 @@ const NumDict = struct {
             try ret.addWord(alloc, word);
         }
 
+        // Optimize the search order
+        updateOptimalSearches(&ret);
+
         return ret;
     }
 
@@ -65,6 +68,16 @@ const NumDict = struct {
 
         // Add the word to the words of the branch
         try current.words.append(alloc, word);
+    }
+
+    fn updateOptimalSearches(self: *NumDict) void {
+        // Call recursively
+        if (self.sub_tree) |tree| {
+            // Sort the indices based on the best rank of the branch associated
+            std.sort.insertion(u8, &self.search_order, self, NumDict.compRanks);
+            for (tree) |*sub_t|
+                updateOptimalSearches(sub_t);
+        }
     }
 
     pub fn destroy(self: *NumDict, alloc: std.mem.Allocator) void {
@@ -129,28 +142,6 @@ const NumDict = struct {
         }
     }
 
-    // TODO: fix to use the limit and the rank sorting
-    // pub fn findAndCollectWithRanksStrict(self: NumDict, numbers: []const u8) ![]const Word {
-    //     if (numbers.len == 0) {
-    //         // We give all the available results
-    //         if (self.words) |words| {
-    //             return words.items;
-    //         } else return &.{};
-    //     } else {
-    //         const n = numbers[0];
-    //         if (n < '2' or n > '9')
-    //             return error.InvalidNumber;
-
-    //         if (self.sub_tree) |tree| {
-    //             // Do the find and collect on the right sub tree
-    //             return tree[n - '2'].findAndCollectWithRanksStrict(numbers[1..]);
-    //         } else {
-    //             // No results
-    //             return &.{};
-    //         }
-    //     }
-    // }
-
     fn collectRecursive(self: NumDict, list: *std.ArrayListUnmanaged(Word), worst_rank: *usize, full: *bool) void {
         // Call recursively on sub trees
         if (self.sub_tree) |tree| {
@@ -198,9 +189,11 @@ const NumDict = struct {
 
         // Find the element in words with the worst rank
         var max_rank: usize = 0;
+        var snd_max: usize = 0;
         var max_i: usize = undefined;
         for (words, 0..) |w, i| {
             if (w.rank >= max_rank) {
+                snd_max = max_rank;
                 max_rank = w.rank;
                 max_i = i;
             }
@@ -209,9 +202,27 @@ const NumDict = struct {
         // Replace it or not
         if (word.rank < max_rank) {
             words[max_i] = word;
-            return max_rank;
+            return @max(word.rank, snd_max);
         }
         return null;
+    }
+
+    pub fn compRanks(context: *NumDict, lhs: u8, rhs: u8) bool {
+        return context.sub_tree.?[lhs].best_rank < context.sub_tree.?[rhs].best_rank;
+    }
+
+    pub fn format(
+        self: @This(),
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = options;
+        _ = fmt;
+        try writer.print("Tree branch, best score: {}, search order: {any}", .{
+            self.best_rank,
+            self.search_order,
+        });
     }
 };
 
@@ -269,6 +280,8 @@ pub fn main() !void {
 
     std.debug.print("Done! ({} ms)\n", .{@divFloor(delta, 1000000)});
 
+    std.debug.print("{}\n", .{dict});
+
     var buf: [32]u8 = undefined;
 
     std.debug.print("2:abc 3:def 4:ghi 5:jkl 6:mno 7:pqrs 8:tuv 9:wxyz\n", .{});
@@ -279,7 +292,7 @@ pub fn main() !void {
     const result_count = 1;
 
     begin = std.time.nanoTimestamp();
-    for (0..999) |_| {
+    for (0..99999) |_| {
         const w = try dict.findAndCollect(alloc, result_count, input);
         alloc.free(w);
     }
@@ -287,7 +300,7 @@ pub fn main() !void {
     delta = std.time.nanoTimestamp() - begin;
 
     defer alloc.free(words);
-    std.debug.print("Results ({} us per call):\n", .{@divFloor(delta, 1000000)});
+    std.debug.print("Results ({} us per call):\n", .{@divFloor(delta, 100000000)});
     for (words) |word| {
         std.debug.print("{s}\n", .{word});
     }
