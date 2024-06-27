@@ -36,10 +36,9 @@ const NumDict = struct {
         while (line_iterator.next()) |line| {
             // Create the word to put in the tree somewhere
             const word = Word{
-                .ascii = try alloc.dupe(u8, line),
+                .ascii = line,
                 .rank = next_rank,
             };
-            errdefer alloc.free(word.ascii);
             next_rank += 1;
 
             try ret.addWord(alloc, word);
@@ -52,8 +51,10 @@ const NumDict = struct {
     }
 
     /// Adds a word to the tree in the right place
-    /// The word's ascii is not duped here so caller owns is
-    fn addWord(self: *NumDict, alloc: std.mem.Allocator, word: Word) !void {
+    /// Works on a blank NumDict (NumDict{}), as an alternative to create
+    /// But then the dict has to be destroyed later
+    /// Dupes the word's ascii
+    pub fn addWord(self: *NumDict, alloc: std.mem.Allocator, word: Word) !void {
         // Get the numbers string to find the tree position
         const numbers = try asciiToNumbers(alloc, word.ascii);
         defer alloc.free(numbers);
@@ -78,13 +79,20 @@ const NumDict = struct {
                 current.best_rank = word.rank;
         }
 
+        // Dupe the word to own it
+        const allocated_word = Word{
+            .ascii = try alloc.dupe(u8, word.ascii),
+            .rank = word.rank,
+        };
+        errdefer alloc.free(allocated_word.ascii);
+
         // Add the word to the words of the branch
-        try current.words.append(alloc, word);
+        try current.words.append(alloc, allocated_word);
     }
 
     /// Sets the search order based on the content of the branches
-    /// Is called by create after adding all the words
-    fn updateOptimalSearches(self: *NumDict) void {
+    /// Is called by create after adding all the words, or manually if only addWord is called()
+    pub fn updateOptimalSearches(self: *NumDict) void {
         // Call recursively
         if (self.sub_tree) |tree| {
             // Sort the indices based on the best rank of the branch associated
@@ -96,11 +104,17 @@ const NumDict = struct {
 
     /// Deallocs this buffer and its contents
     pub fn destroy(self: *NumDict, alloc: std.mem.Allocator) void {
+        // Call destroy on subtrees
         if (self.sub_tree) |tree| {
             for (tree) |*sub_t| {
                 sub_t.destroy(alloc);
             }
             alloc.destroy(self.sub_tree.?);
+        }
+
+        // Destroy words
+        for (self.words.items) |word| {
+            alloc.free(word.ascii);
         }
         self.words.deinit(alloc);
     }
@@ -113,6 +127,7 @@ const NumDict = struct {
         const asciis = try alloc.alloc([]const u8, n);
         errdefer alloc.free(asciis);
 
+        // Collect with ranks
         const results = try self.findAndCollectWithRanks(words, numbers);
         for (results, asciis[0..results.len]) |word, *ascii| {
             ascii.* = word.ascii;
@@ -135,9 +150,13 @@ const NumDict = struct {
     pub fn findAndCollectWithRanks(self: NumDict, buf: []Word, numbers: []const u8) ![]const Word {
         var list = std.ArrayListUnmanaged(Word).initBuffer(buf);
 
-        // TODO: check the numbers
+        // Check the numbers
+        if (!isNumbers(numbers))
+            return error.badNumbers;
 
+        // Call the recursive version
         self.findAndCollectInternal(&list, numbers);
+        // Sort the results
         std.sort.insertion(Word, list.items, {}, Word.compRanks);
 
         return list.items;
@@ -248,6 +267,19 @@ const NumDict = struct {
         return context.sub_tree.?[lhs].best_rank < context.sub_tree.?[rhs].best_rank;
     }
 
+    /// Count the number of words in this dictionary recursively
+    pub fn countWords(self: NumDict) usize {
+        var ret: usize = self.words.items.len;
+
+        if (self.sub_tree) |trees| {
+            for (trees) |sub_t| {
+                ret += sub_t.countWords();
+            }
+        }
+
+        return ret;
+    }
+
     /// Format function for printing a branch and getting some info on it
     pub fn format(
         self: @This(),
@@ -263,6 +295,15 @@ const NumDict = struct {
         });
     }
 };
+
+/// Checks if the numbers given is valid for a word
+/// i.e. contains numbers 2 through 9 only
+pub fn isNumbers(numbers: []const u8) bool {
+    for (numbers) |n| {
+        if (n < '2' or n > '9')
+            return false;
+    } else return true;
+}
 
 /// Convert a single ascii letter to its matching t9 number
 pub fn charToNumber(ascii: u8) !u8 {
@@ -293,15 +334,17 @@ pub fn asciiToNumbers(alloc: std.mem.Allocator, ascii: []const u8) ![]const u8 {
 }
 
 /// Convert an ascii string to its matching t9 numbers (at comptime, without an allocator)
-fn asciiToNumbersComptime(ascii: []const u8) []const u8 {
-    var ret: []const u8 = "";
+inline fn asciiToNumbersComptime(comptime ascii: []const u8) []const u8 {
+    comptime {
+        var ret: []const u8 = "";
 
-    for (ascii) |c| {
-        const added = [_]u8{charToNumber(c) catch @compileError("Encountered non alphabetic character " ++ &.{c})};
-        ret = ret ++ added;
+        for (ascii) |c| {
+            const added = [_]u8{charToNumber(c) catch @compileError("Encountered non alphabetic character " ++ &.{c})};
+            ret = ret ++ added;
+        }
+
+        return ret;
     }
-
-    return ret;
 }
 
 pub fn main() !void {
@@ -359,6 +402,75 @@ test "ascii to numbers" {
 }
 
 test "ascii to numbers comptime" {
-    try std.testing.expectEqualStrings("484552863", comptime asciiToNumbersComptime("Guillaume"));
-    try std.testing.expectEqualStrings("43556096753", comptime asciiToNumbersComptime("Hello World"));
+    try std.testing.expectEqualStrings("484552863", asciiToNumbersComptime("Guillaume"));
+    try std.testing.expectEqualStrings("43556096753", asciiToNumbersComptime("Hello World"));
+}
+
+test "is numbers" {
+    try std.testing.expect(isNumbers("2345"));
+    try std.testing.expect(isNumbers("9"));
+    try std.testing.expect(isNumbers(""));
+
+    try std.testing.expect(!isNumbers("554a9"));
+    try std.testing.expect(!isNumbers("1234"));
+    try std.testing.expect(!isNumbers(&.{'9' + 1}));
+}
+
+test "small dict" {
+    const alloc = std.testing.allocator;
+
+    var dict = NumDict{};
+    defer dict.destroy(alloc);
+
+    try std.testing.expectEqual(0, dict.countWords());
+
+    {
+        const results = try dict.findAndCollect(alloc, 5, "");
+        defer alloc.free(results);
+
+        try std.testing.expectEqual(0, results.len);
+    }
+
+    try dict.addWord(alloc, NumDict.Word{ .ascii = "hello", .rank = 0 });
+    try dict.addWord(alloc, NumDict.Word{ .ascii = "world", .rank = 1 });
+    try dict.addWord(alloc, NumDict.Word{ .ascii = "hey", .rank = 2 });
+
+    dict.updateOptimalSearches();
+
+    try std.testing.expectEqual(3, dict.countWords());
+
+    {
+        const results = try dict.findAndCollect(alloc, 5, asciiToNumbersComptime("wor"));
+        defer alloc.free(results);
+
+        try std.testing.expectEqual(1, results.len);
+
+        try std.testing.expectEqualSlices(u8, "world", results[0]);
+    }
+
+    {
+        const results = try dict.findAndCollect(alloc, 2, asciiToNumbersComptime("he"));
+        defer alloc.free(results);
+
+        try std.testing.expectEqual(2, results.len);
+
+        try std.testing.expectEqualSlices(u8, "hello", results[0]);
+        try std.testing.expectEqualSlices(u8, "hey", results[1]);
+    }
+
+    {
+        const results = try dict.findAndCollect(alloc, 1, asciiToNumbersComptime("he"));
+        defer alloc.free(results);
+
+        try std.testing.expectEqual(1, results.len);
+
+        try std.testing.expectEqualSlices(u8, "hello", results[0]);
+    }
+
+    {
+        const results = try dict.findAndCollect(alloc, 1, asciiToNumbersComptime("hehe"));
+        defer alloc.free(results);
+
+        try std.testing.expectEqual(0, results.len);
+    }
 }
